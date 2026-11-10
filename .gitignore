@@ -1,4 +1,6 @@
 .venv/
+.venv-airflow/
+orchestration/airflow_home/
 data/raw/
 data/lake/
 data/minio/
