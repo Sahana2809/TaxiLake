@@ -12,3 +12,4 @@ __pycache__/
 derby.log
 metastore_db/
 .ivy2/
+.pytest_cache/
