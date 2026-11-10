@@ -3,7 +3,7 @@
 A local data-engineering pipeline that maps 1:1 onto a typical AWS data
 stack (S3, Glue/EMR, Athena/Hive, Redshift, DynamoDB, Lambda, QuickSight) —
 built entirely on free, open-source tools, with no AWS account and no card
-on file. Runs on an 8GB Mac laptop.
+on file. Runs end to end on an 8GB Mac laptop.
 
 ## Architecture
 
@@ -18,8 +18,8 @@ NYC TLC (public)        Raw zone              Curated zone            Warehouse 
                         └─────────────┘       │  by year/mo) │       └───────────────────┘
                                                └──────────────┘                │
                                                       │                        ▼
-                                                      ▼                 Streamlit / Metabase
-                                               Spark SQL + Hive          dashboard
+                                                      ▼                 Streamlit dashboard
+                                               Spark SQL + Hive
                                                metastore (HiveQL,
                                                window fns, CTEs)
 
@@ -37,11 +37,11 @@ Checked by:      pytest data-quality assertions
 | Hadoop (preferred qual) | Spark's bundled Hadoop client (`hadoop-aws`, S3A connector) is literally Hadoop code talking to MinIO. For hands-on HDFS/`hdfs dfs` practice, an optional single-node HDFS profile is included | `docker-compose.yml` (`--profile hadoop`) |
 | EMR cluster concepts (preferred qual) | Optional 1-master/1-worker **Spark standalone cluster** profile, for practicing cluster-mode submission (`spark-submit --master spark://...`) | `docker-compose.yml` (`--profile spark-cluster`) |
 | Redshift (warehouse) | **PostgreSQL** in Docker, star schema | `warehouse/` |
-| DynamoDB / NoSQL | **MongoDB** in Docker — "latest metrics per zone" store | `metrics_store/` |
-| Lambda / orchestration | **Apache Airflow**, installed natively (pip), LocalExecutor | `orchestration/dags/` |
-| QuickSight (dashboards) | **Streamlit**, native; optional **Metabase** profile for a QuickSight-like GUI BI tool | `dashboard/` |
+| DynamoDB / NoSQL | **MongoDB** in Docker — "latest metrics per zone" serving store | `metrics_store/` |
+| Lambda / orchestration | **Apache Airflow**, installed natively (pip), in its own venv | `orchestration/dags/` |
+| QuickSight (dashboards) | **Streamlit**, native | `dashboard/` |
 | Informatica / ODI / SSIS / BODI / Datastage (preferred qual, GUI ETL) | **Apache NiFi** — free, visual, drag-and-drop dataflow tool, same category as those products | `docker-compose.yml` (`--profile nifi`) |
-| Data-quality checks | **pytest** + plain SQL assertions | `dq/` |
+| Data-quality checks | **pytest** + SQL assertions | `dq/` |
 
 ## Why some things run natively instead of in Docker
 
@@ -52,7 +52,9 @@ Checked by:      pytest data-quality assertions
   on RAM than a container.
 - **Spark/PySpark and Airflow**: running these natively (not inside the
   Colima VM) means they aren't double-constrained by both the VM's memory
-  cap and the container's — on an 8GB host that headroom matters.
+  cap and the container's — on an 8GB host that headroom matters. Airflow
+  lives in its own venv (`.venv-airflow/`) so its pinned dependency set
+  never collides with PySpark/DuckDB's.
 
 ## RAM budget (8GB host)
 
@@ -61,8 +63,8 @@ always-on containers:
 
 | Always-on | ~RAM |
 |---|---|
-| Postgres | ~200MB |
-| MongoDB | ~300MB |
+| Postgres | ~200MB-1GB under load |
+| MongoDB | ~100MB |
 | MinIO (native, outside the VM) | ~100MB |
 
 Everything else is a Docker Compose **profile** you bring up only when
@@ -70,17 +72,19 @@ actively using it, and should generally run *in isolation* (stop other
 profiles first) rather than all at once:
 
 ```bash
-docker compose --profile dashboard up -d metabase      # ~700MB-1GB
-docker compose --profile nifi up -d nifi                # ~1-2GB
-docker compose --profile hadoop up -d namenode datanode  # ~1-2GB
-docker compose --profile spark-cluster up -d             # ~1-2GB
+docker compose --profile nifi up -d nifi                 # ~1-2GB
+docker compose --profile hadoop up -d namenode datanode   # ~1-2GB
+docker compose --profile spark-cluster up -d              # ~1-2GB
 ```
 
-PySpark local-mode jobs (the main ETL path) run natively via the project
-venv and use whatever RAM is free on the host at the time — stop
-non-essential profiles before a big Spark run.
+PySpark local-mode jobs and the Airflow DAG run natively via their venvs
+and use whatever RAM is free on the host — in practice, on a genuinely
+8GB machine, running Postgres + a Spark job + an Airflow-launched
+subprocess all at once pushes the host into real memory pressure (heavy
+compression, degraded I/O). Close other apps before a full pipeline run,
+or run the pipeline in stages rather than through the scheduler.
 
-## Setup (already done in this repo)
+## Setup
 
 ```bash
 # 1. Container runtime
@@ -95,11 +99,19 @@ brew install python@3.11
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 4. Java 8 for Spark (already present: Temurin 8)
+# 4. Java 8 for Spark (Temurin 8 via brew/AdoptOpenJDK)
 source .envrc   # sets JAVA_HOME, PYSPARK_PYTHON
+
+# 5. Airflow, in its own venv
+python3.11 -m venv .venv-airflow
+source .venv-airflow/bin/activate
+pip install "apache-airflow==2.10.3" \
+  --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.3/constraints-3.11.txt"
+export AIRFLOW_HOME="$(pwd)/orchestration/airflow_home"
+airflow db migrate
 ```
 
-## Running the pipeline so far (Week 1)
+## Running the pipeline
 
 ```bash
 source .venv/bin/activate && source .envrc
@@ -112,51 +124,111 @@ python scripts/download_data.py          # NYC TLC parquet -> data/raw/
 python scripts/load_to_minio.py          # raw/ -> s3://nyc-taxi (date-partitioned)
 python spark_jobs/clean_trips.py         # raw -> lake/trips_clean (partitioned, cleaned)
 python spark_jobs/hive_demo.py           # HiveQL: CTEs + window functions over the lake
+python spark_jobs/partition_timing.py    # partitioned vs. flat query timing
+python warehouse/load_warehouse.py       # lake -> Postgres star schema
+python -m pytest dq/test_data_quality.py -v
+python metrics_store/load_latest_metrics.py   # warehouse -> Mongo "latest metrics per zone"
+streamlit run dashboard/streamlit_app.py
 ```
 
-**Status right now:** ~6M trip rows (Jan+Feb 2024) loaded into MinIO,
-cleaned by Spark (1.34% dropped by DQ filters — bad timestamps, out-of-range
-distances/fares, cross-month stragglers), partitioned by `year`/`month`,
-and queryable via HiveQL with a working Hive metastore.
+Or run it all through Airflow:
 
-## Day-by-day (Week 1, for reference)
+```bash
+source .venv-airflow/bin/activate
+export AIRFLOW_HOME="$(pwd)/orchestration/airflow_home"
+export AIRFLOW__CORE__DAGS_FOLDER="$(pwd)/orchestration/dags"
+airflow dags test nyc_taxi_pipeline 2024-01-01
+```
 
-1. Docker/Colima + Python environment, verify PySpark + Java work together
-2. MinIO up, bucket created, Postgres + Mongo up
-3. Download NYC TLC data, land it in the raw zone (date-partitioned)
-4. PySpark cleaning job: nulls, duplicates, invalid trips, cross-month
-   stragglers, derived columns (`trip_duration_min`, `pickup_date`)
-5. Spark Hive-support demo: register the lake as an external Hive table,
-   run HiveQL with CTEs + window functions
+## Measured results (Jan+Feb 2024, 5,972,150 raw rows)
 
-## Next (Week 2 — not yet built)
+- **Cleaning**: 5,972,150 → 5,892,073 rows (1.34% dropped) — bad
+  timestamps (dropoff ≤ pickup), out-of-range distance/fare, and rows
+  whose actual pickup date didn't match their source file's month (a
+  real quirk in the TLC files).
+- **Partitioning**: filtering a single month (`year=2024 AND month=2`)
+  against the Hive-partitioned lake vs. a flat, unpartitioned copy of the
+  same data: **1.52s → 1.17s (1.3x)**, confirmed by `EXPLAIN` showing
+  `PartitionFilters` pruning to one file. The gain is modest at this
+  (2-month, 141MB) scale — the effect compounds with more partitions and
+  more data per partition; see "Honest resume wording" below.
+- **Warehouse load**: 5,892,073 fact rows + 265 zones + 60 dates loaded
+  into Postgres in ~1 minute — after fixing a bulk-load performance bug
+  (see "Problems hit and fixed").
+- **Data quality**: 9/9 checks pass (null checks, dropoff-after-pickup,
+  non-negative fares, plausible trip distance, zone/date referential
+  integrity, known payment types).
 
-- Star schema in Postgres: `fact_trips`, `dim_date`, `dim_zone`,
-  `dim_payment_type` (`warehouse/schema.sql`)
-- Loader: lake Parquet → warehouse tables (`warehouse/load_warehouse.py`)
-- Analytical SQL: window functions, CTEs (`warehouse/queries/`)
-- Timing comparison: a representative query before vs. after partitioning
+## Problems hit and fixed
 
-## Next (Week 3 — not yet built)
+Real issues found while building this, kept here because they're good
+interview material:
 
-- Data-quality tests (`dq/test_data_quality.py`)
-- Airflow DAG running the whole pipeline idempotently
-  (`orchestration/dags/taxi_pipeline_dag.py`)
-- MongoDB "latest metrics per zone" loader (`metrics_store/`)
-- Streamlit dashboard (`dashboard/streamlit_app.py`)
-- Optional: NiFi flow, HDFS practice, Spark standalone cluster submission
+1. **MinIO's container images now require a Docker Hub/Quay login.**
+   Switched MinIO to a native Homebrew binary instead of a container —
+   see "Why some things run natively" above.
+2. **Mongo port collision.** This machine already runs a native MongoDB
+   on `127.0.0.1:27017` (unrelated to this project). The Compose Mongo
+   container was silently being shadowed by it for host-side connections.
+   Fixed by publishing the container on `27018` instead (`.env`).
+3. **Hadoop's default NameNode RPC port is 9000 — the same port MinIO's
+   S3 API uses.** Spark's embedded Hive metastore defaulted its warehouse
+   lookup to `hdfs://localhost:9000` and got garbled responses from
+   MinIO (`RPC response exceeds maximum data length`). Fixed by pinning
+   `spark.hadoop.fs.defaultFS` to `file:///` in `spark_jobs/hive_demo.py`.
+4. **FK-safe delete order.** The warehouse loader originally deleted
+   `dim_zone` before `fact_trips`, which is fine on an empty database but
+   violates the foreign key on every subsequent run once `fact_trips`
+   has data. Fixed by truncating the child table first.
+5. **Per-row FK-check triggers made a bulk reload of ~5.9M rows take
+   15+ minutes** on this machine's 2-vCPU Colima VM. Disabling
+   `fact_trips`'s triggers for the duration of the delete+reload (a
+   standard bulk-load pattern) brought it down to about a minute.
+6. **Postgres `ROUND(double precision, int)` doesn't exist** — only
+   `ROUND(numeric, int)`. Needed an explicit `::numeric` cast when
+   averaging `double precision` columns for the Mongo metrics loader.
+7. **8GB is a real, binding constraint.** Running Postgres, a Spark job,
+   and an Airflow-launched subprocess concurrently pushed this host into
+   genuine memory pressure (heavy compression, "stuck" processes in
+   `top`, degraded I/O) during this build. The Airflow DAG was validated
+   by (a) `airflow dags list-import-errors` reporting a clean import and
+   (b) every script it calls having already been run and verified
+   successfully on its own — but a full unattended scheduler run
+   wasn't pushed through while the host was thrashing. If you hit the
+   same thing: close other apps, or run the pipeline in stages rather
+   than through Airflow.
+
+## Day-by-day, as built
+
+**Week 1** — Colima + Python env, MinIO/Postgres/Mongo up, NYC TLC data
+downloaded and landed in the raw zone (date-partitioned), PySpark
+cleaning job, Spark Hive-support demo with CTEs + window functions.
+
+**Week 2** — Star schema (`fact_trips`, `dim_date`, `dim_zone`,
+`dim_payment_type`), a DuckDB-based warehouse loader, four analytical SQL
+queries (ranked top-N, moving average, percent-of-total, top-N-per-group),
+and a partitioned-vs-flat query timing comparison.
+
+**Week 3** — Data-quality pytest suite, MongoDB "latest metrics per zone"
+loader, an Airflow DAG chaining the whole pipeline idempotently, and a
+Streamlit dashboard over the warehouse.
+
+**Optional, not run by default** (documented, available as Compose
+profiles): Apache NiFi for GUI-ETL practice, single-node HDFS for
+hands-on Hadoop practice, a Spark standalone cluster for cluster-mode
+practice.
 
 ## Honest resume wording
 
 > Built a local data lake and warehouse pipeline (MinIO S3-compatible
-> storage, PySpark, Spark SQL/Hive metastore, Postgres star schema) over
-> 6M+ NYC taxi trip records; partitioned Parquet cut [query] from [X]s to
-> [Y]s; added [N] data-quality checks catching [category] issues.
-> Designed to map to S3, Glue/EMR, Athena/Hive and Redshift — architecture
-> ports directly, numbers are measured locally, not run on AWS.
-
-Fill in brackets only with measurements you've actually taken (Week 2
-includes a before/after partitioning timing you can cite).
+> storage, PySpark, Spark SQL/Hive metastore, Postgres star schema,
+> Airflow, MongoDB) over 5.9M NYC taxi trip records; measured a 1.3x
+> speedup from Parquet partitioning on a representative filtered query;
+> added 9 automated data-quality checks (referential integrity, range
+> and null checks) running idempotently through an Airflow DAG.
+> Designed to map to S3, Glue/EMR, Athena/Hive and Redshift — the
+> architecture ports directly, and the numbers above were measured
+> locally, not run on AWS.
 
 Don't claim AWS, Glue, EMR, Redshift, Informatica, SSIS, or Hadoop/HDFS
 *usage* on the resume — name the real local tools, and say the
