@@ -218,20 +218,4 @@ profiles): Apache NiFi for GUI-ETL practice, single-node HDFS for
 hands-on Hadoop practice, a Spark standalone cluster for cluster-mode
 practice.
 
-## Honest resume wording
 
-> Built a local data lake and warehouse pipeline (MinIO S3-compatible
-> storage, PySpark, Spark SQL/Hive metastore, Postgres star schema,
-> Airflow, MongoDB) over 5.9M NYC taxi trip records; measured a 1.3x
-> speedup from Parquet partitioning on a representative filtered query;
-> added 9 automated data-quality checks (referential integrity, range
-> and null checks) running idempotently through an Airflow DAG.
-> Designed to map to S3, Glue/EMR, Athena/Hive and Redshift — the
-> architecture ports directly, and the numbers above were measured
-> locally, not run on AWS.
-
-Don't claim AWS, Glue, EMR, Redshift, Informatica, SSIS, or Hadoop/HDFS
-*usage* on the resume — name the real local tools, and say the
-architecture maps to those AWS services. It's fine to say you *read
-documentation and understand how it maps* for the preferred-but-unused
-items (AWS services, Hadoop/HDFS cluster ops).
