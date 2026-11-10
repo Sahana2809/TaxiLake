@@ -1,10 +1,9 @@
 """Runs real HiveQL against the lake using Spark's embedded Hive support.
 
-This is the free stand-in for the JD's "Hive / HadoopSQL" preferred
-qualification: Spark's `enableHiveSupport()` pulls in the actual Hive
-metastore client + HiveQL parser (no separate Hive server needed, so it
-stays cheap on an 8GB laptop). The metastore is a local Derby DB under
-data/metastore_db/ -- genuinely Hive's metastore, just embedded.
+Spark's `enableHiveSupport()` pulls in the actual Hive metastore client
++ HiveQL parser (no separate Hive server needed, so it stays cheap on an
+8GB laptop). The metastore is a local Derby DB under data/metastore_db/
+-- genuinely Hive's metastore, just embedded.
 
 Run:
   source .venv/bin/activate && source .envrc

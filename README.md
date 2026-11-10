@@ -29,18 +29,18 @@ Checked by:      pytest data-quality assertions
 
 ## Tool mapping
 
-| AWS service (the JD) | Free local equivalent | Where |
+| AWS service | Free local equivalent | Where |
 |---|---|---|
 | S3 (data lake) | **MinIO** — native Homebrew binary, S3 API-compatible | `scripts/start_minio.sh` |
 | Glue / EMR (Spark ETL) | **PySpark**, local mode, running natively on the host | `spark_jobs/clean_trips.py` |
 | Athena / Hive / HadoopSQL | **Spark SQL with `enableHiveSupport()`** — a real embedded Hive metastore (Derby) + genuine HiveQL parser, no separate server | `spark_jobs/hive_demo.py` |
-| Hadoop (preferred qual) | Spark's bundled Hadoop client (`hadoop-aws`, S3A connector) is literally Hadoop code talking to MinIO. For hands-on HDFS/`hdfs dfs` practice, an optional single-node HDFS profile is included | `docker-compose.yml` (`--profile hadoop`) |
-| EMR cluster concepts (preferred qual) | Optional 1-master/1-worker **Spark standalone cluster** profile, for practicing cluster-mode submission (`spark-submit --master spark://...`) | `docker-compose.yml` (`--profile spark-cluster`) |
+| Hadoop / HDFS | Spark's bundled Hadoop client (`hadoop-aws`, S3A connector) is literally Hadoop code talking to MinIO. For hands-on HDFS/`hdfs dfs` practice, an optional single-node HDFS profile is included | `docker-compose.yml` (`--profile hadoop`) |
+| EMR clusters | Optional 1-master/1-worker **Spark standalone cluster** profile, for practicing cluster-mode submission (`spark-submit --master spark://...`) | `docker-compose.yml` (`--profile spark-cluster`) |
 | Redshift (warehouse) | **PostgreSQL** in Docker, star schema | `warehouse/` |
 | DynamoDB / NoSQL | **MongoDB** in Docker — "latest metrics per zone" serving store | `metrics_store/` |
 | Lambda / orchestration | **Apache Airflow**, installed natively (pip), in its own venv | `orchestration/dags/` |
 | QuickSight (dashboards) | **Streamlit**, native | `dashboard/` |
-| Informatica / ODI / SSIS / BODI / Datastage (preferred qual, GUI ETL) | **Apache NiFi** — free, visual, drag-and-drop dataflow tool, same category as those products | `docker-compose.yml` (`--profile nifi`) |
+| GUI ETL tools (Informatica, SSIS, ODI, etc.) | **Apache NiFi** — free, visual, drag-and-drop dataflow tool | `docker-compose.yml` (`--profile nifi`) |
 | Data-quality checks | **pytest** + SQL assertions | `dq/` |
 
 ## Why some things run natively instead of in Docker
@@ -151,7 +151,7 @@ airflow dags test nyc_taxi_pipeline 2024-01-01
   same data: **1.52s → 1.17s (1.3x)**, confirmed by `EXPLAIN` showing
   `PartitionFilters` pruning to one file. The gain is modest at this
   (2-month, 141MB) scale — the effect compounds with more partitions and
-  more data per partition; see "Honest resume wording" below.
+  more data per partition.
 - **Warehouse load**: 5,892,073 fact rows + 265 zones + 60 dates loaded
   into Postgres in ~1 minute — after fixing a bulk-load performance bug
   (see "Problems hit and fixed").
@@ -217,21 +217,3 @@ Streamlit dashboard over the warehouse.
 profiles): Apache NiFi for GUI-ETL practice, single-node HDFS for
 hands-on Hadoop practice, a Spark standalone cluster for cluster-mode
 practice.
-
-## Honest resume wording
-
-> Built a local data lake and warehouse pipeline (MinIO S3-compatible
-> storage, PySpark, Spark SQL/Hive metastore, Postgres star schema,
-> Airflow, MongoDB) over 5.9M NYC taxi trip records; measured a 1.3x
-> speedup from Parquet partitioning on a representative filtered query;
-> added 9 automated data-quality checks (referential integrity, range
-> and null checks) running idempotently through an Airflow DAG.
-> Designed to map to S3, Glue/EMR, Athena/Hive and Redshift — the
-> architecture ports directly, and the numbers above were measured
-> locally, not run on AWS.
-
-Don't claim AWS, Glue, EMR, Redshift, Informatica, SSIS, or Hadoop/HDFS
-*usage* on the resume — name the real local tools, and say the
-architecture maps to those AWS services. It's fine to say you *read
-documentation and understand how it maps* for the preferred-but-unused
-items (AWS services, Hadoop/HDFS cluster ops).
