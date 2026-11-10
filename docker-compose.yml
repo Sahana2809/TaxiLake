@@ -1,0 +1,128 @@
+services:
+  # NOTE: MinIO runs natively via Homebrew (scripts/start_minio.sh), not in
+  # Docker. As of 2024/2025, MinIO's Docker Hub and Quay images require a
+  # logged-in account to pull, which conflicts with the "no account needed"
+  # goal of this project. The native `minio` + `mc` binaries (brew install
+  # minio minio-mc) are unauthenticated, free, and lighter on RAM.
+
+  # ---- Core data-store stack (~700MB total RAM) ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./warehouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    ports:
+      - "${MONGO_PORT}:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # ---- Optional: dashboard (bring up only when demoing; ~700MB) ----
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    profiles: ["dashboard"]
+    ports:
+      - "${METABASE_PORT}:3000"
+    depends_on:
+      - postgres
+    volumes:
+      - metabase_data:/metabase-data
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+
+  # ---- Optional: GUI ETL tool, free stand-in for Informatica/SSIS/ODI/Datastage ----
+  # Heavy (~1-2GB JVM even with reduced heap). Run in isolation:
+  #   docker compose --profile nifi up nifi
+  # and stop core services first if RAM is tight.
+  nifi:
+    image: apache/nifi:1.27.0
+    container_name: nifi
+    profiles: ["nifi"]
+    ports:
+      - "8443:8443"
+    environment:
+      NIFI_WEB_HTTPS_PORT: "8443"
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: admin12345678
+      NIFI_JVM_HEAP_INIT: ${NIFI_JVM_HEAP_INIT}
+      NIFI_JVM_HEAP_MAX: ${NIFI_JVM_HEAP_MAX}
+    volumes:
+      - nifi_data:/opt/nifi/nifi-current/conf
+
+  # ---- Optional: single-node HDFS, for hands-on Hadoop practice only ----
+  # Not part of the live pipeline (the lake uses MinIO/S3A, matching real S3).
+  # Run with: docker compose --profile hadoop up namenode datanode
+  namenode:
+    image: apache/hadoop:3.3.6
+    container_name: namenode
+    profiles: ["hadoop"]
+    command: ["hdfs", "namenode"]
+    environment:
+      ENSURE_NAMENODE_DIR: /tmp/hadoop/dfs/name
+    ports:
+      - "9870:9870"
+    volumes:
+      - hadoop_name:/tmp/hadoop
+
+  datanode:
+    image: apache/hadoop:3.3.6
+    container_name: datanode
+    profiles: ["hadoop"]
+    command: ["hdfs", "datanode"]
+    depends_on:
+      - namenode
+    volumes:
+      - hadoop_data:/tmp/hadoop
+
+  # ---- Optional: Spark standalone cluster, for cluster-mode practice ----
+  # Local-mode PySpark (run natively on the host, see scripts/) already covers
+  # day-to-day ETL dev. Bring this up only to practice cluster concepts
+  # (maps to EMR). Run with: docker compose --profile spark-cluster up
+  spark-master:
+    image: bitnami/spark:3.5
+    container_name: spark-master
+    profiles: ["spark-cluster"]
+    environment:
+      SPARK_MODE: master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+
+  spark-worker:
+    image: bitnami/spark:3.5
+    container_name: spark-worker
+    profiles: ["spark-cluster"]
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 1g
+      SPARK_WORKER_CORES: 1
+    depends_on:
+      - spark-master
+
+volumes:
+  postgres_data:
+  mongo_data:
+  metabase_data:
+  nifi_data:
+  hadoop_name:
+  hadoop_data:

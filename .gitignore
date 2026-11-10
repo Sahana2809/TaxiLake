@@ -1,0 +1,14 @@
+.venv/
+data/raw/
+data/lake/
+data/minio/
+data/minio.log
+data/metastore_db/
+data/hive_warehouse/
+data/warehouse_export/
+__pycache__/
+*.pyc
+.DS_Store
+derby.log
+metastore_db/
+.ivy2/
