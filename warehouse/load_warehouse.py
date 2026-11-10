@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 
 import duckdb
+import psycopg2
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +32,32 @@ PG_CONN = (
     f"password={os.environ['POSTGRES_PASSWORD']} "
     f"host=localhost port={os.environ['POSTGRES_PORT']}"
 )
+
+
+def pg_connect():
+    return psycopg2.connect(
+        dbname=os.environ["POSTGRES_DB"],
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+        host="localhost",
+        port=os.environ["POSTGRES_PORT"],
+    )
+
+
+def set_fact_trips_triggers(enabled: bool) -> None:
+    """Bulk-reloading 5.9M fact rows with per-row FK-check triggers enabled
+    is dramatically slower than a plain COPY. Disable them for the load,
+    then re-enable -- a standard bulk-load pattern, safe here because the
+    staged fact rows' keys come from the same pipeline that populates the
+    dimensions they reference."""
+    action = "ENABLE" if enabled else "DISABLE"
+    conn = pg_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"ALTER TABLE fact_trips {action} TRIGGER ALL")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def connect() -> duckdb.DuckDBPyConnection:
@@ -110,7 +137,6 @@ def load_fact_trips(con: duckdb.DuckDBPyConnection) -> None:
             hive_partitioning=true
         )
     """)
-    con.execute("DELETE FROM pg.fact_trips")
     con.execute("""
         INSERT INTO pg.fact_trips (
             pickup_date_key, pickup_zone_key, dropoff_zone_key, payment_type_key,
@@ -126,9 +152,17 @@ def load_fact_trips(con: duckdb.DuckDBPyConnection) -> None:
 
 def main() -> None:
     con = connect()
-    load_dim_zone(con)
-    load_dim_date(con)
-    load_fact_trips(con)
+    set_fact_trips_triggers(enabled=False)
+    try:
+        # fact_trips (child) must be cleared before the dimensions (parents)
+        # it references, or the dimension deletes trip a foreign key
+        # violation.
+        con.execute("DELETE FROM pg.fact_trips")
+        load_dim_zone(con)
+        load_dim_date(con)
+        load_fact_trips(con)
+    finally:
+        set_fact_trips_triggers(enabled=True)
     con.close()
     print("warehouse load complete.")
 
